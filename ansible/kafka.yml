@@ -1,0 +1,97 @@
+---
+- name: Set up Kafka
+  hosts: kafka_brokers
+  become: yes
+  vars:
+    scala_kafka_version: "2.13-3.4.1"
+    kafka_version: "3.4.1"
+    kafka_home: "/opt/kafka"
+    zookeeper_host: "{{ groups['zookeeper'][0] }}"
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install required dependencies
+      apt:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - "openjdk-11-jdk"
+        - "curl"
+        - "wget"
+    
+    - name: Create Kafka user
+      user:
+        name: kafkauser
+        state: present
+    
+    - name: Create Kafka directory
+      file:
+        path: /opt/kafka
+        state: directory
+        owner: kafkauser
+        group: kafkauser
+
+    - name: Download and extract Kafka
+      unarchive:
+        src: "https://downloads.apache.org/kafka/{{ kafka_version }}/kafka_{{ scala_kafka_version }}.tgz"
+        dest: "{{ kafka_home }}"
+        remote_src: yes
+        creates: "{{ kafka_home }}/kafka_{{ scala_kafka_version }}"
+
+    - name: Configure Kafka
+      template:
+        src: templates/server.properties.j2
+        dest: "{{ kafka_home }}/kafka_{{ scala_kafka_version }}/config/server.properties"
+      vars:
+        broker_id: "{{ hostvars[inventory_hostname]['kafka_broker_id'] }}"
+
+    - name: Change ownership of Kafka directory
+      file:
+        path: /opt/kafka
+        owner: kafkauser
+        recurse: yes
+
+    - name: Create Kafka service file
+      template:
+        src: templates/kafka.service.j2
+        dest: /etc/systemd/system/kafka.service
+      
+
+    - name: Reload systemctl daemon to read new service
+      command: systemctl daemon-reload
+      become: yes
+    
+    - name: Unmask Kafka service
+      command: systemctl unmask kafka
+      become: yes
+
+    - name: Enable Kafka service to start on boot
+      systemd:
+        name: kafka
+        enabled: yes
+        state: started
+      become: yes
+    
+    - name: Get Kafka service status
+      command: systemctl status kafka
+      register: kafka_status
+      ignore_errors: true
+      become: yes
+
+    - name: Print Kafka service status
+      debug:
+        var: kafka_status.stdout_lines
+
+    - name: Check kafka broker list in zookeeper
+      command: "{{ kafka_home }}/kafka_{{ scala_kafka_version }}/bin/zookeeper-shell.sh {{ zookeeper_host }}:2181 ls /brokers/ids"
+      register: zookeeper_status
+      ignore_errors: true
+      become: yes
+      become_user: kafkauser
+
+    - name: Print kafka broker list 
+      debug:
+        var: zookeeper_status.stdout_lines
